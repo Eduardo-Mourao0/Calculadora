@@ -38,6 +38,29 @@ calculadora.exe
 
 Digite `testes` no programa para executar os exemplos do enunciado.
 
+## Testes adicionais
+
+Tambem existe um arquivo de testes automatizados com casos que nao aparecem diretamente no enunciado:
+
+- modulo;
+- raiz quadrada;
+- subtracao com resultado negativo;
+- numero negativo;
+- expressao aninhada;
+- divisao por zero;
+- raiz de numero negativo;
+- logaritmo invalido;
+- tangente indefinida;
+- operandos insuficientes;
+- operandos sobrando;
+- token invalido.
+
+Para compilar e executar:
+
+```sh
+make test
+```
+
 ## Testes do enunciado
 
 | Pos-fixa | Valor esperado |
