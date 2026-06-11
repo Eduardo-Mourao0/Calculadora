@@ -8,302 +8,291 @@
 #include <string.h>
 
 #define PILHA_MAX 128
-#define PI 3.14159265358979323846
+#define STR_MAX   512
+#define PI        3.14159265358979323846
+
+/* ---------- pilhas internas ---------- */
 
 typedef struct {
     double itens[PILHA_MAX];
-    int topo;
+    int    topo;
 } PilhaDouble;
 
 typedef struct {
-    char itens[PILHA_MAX][CALC_TEXTO_MAX];
-    int topo;
-} PilhaTexto;
+    char   texto[PILHA_MAX][STR_MAX];
+    int    precedencia[PILHA_MAX];
+    char   operador[PILHA_MAX];
+    double valor[PILHA_MAX];
+    int    topo;
+} PilhaExpr;
 
-static void definir_erro(CalcResultado *resultado, CalcStatus status, const char *detalhe)
+static int pd_push(PilhaDouble *p, double v)
 {
-    resultado->status = status;
-    snprintf(resultado->erro, sizeof(resultado->erro), "%s%s%s", calc_status_texto(status), detalhe ? ": " : "", detalhe ? detalhe : "");
-}
-
-static int pilha_double_push(PilhaDouble *pilha, double valor)
-{
-    if (pilha->topo >= PILHA_MAX) {
-        return 0;
-    }
-    pilha->itens[pilha->topo++] = valor;
+    if (p->topo >= PILHA_MAX) return 0;
+    p->itens[p->topo++] = v;
     return 1;
 }
 
-static int pilha_double_pop(PilhaDouble *pilha, double *valor)
+static int pd_pop(PilhaDouble *p, double *v)
 {
-    if (pilha->topo <= 0) {
-        return 0;
-    }
-    *valor = pilha->itens[--pilha->topo];
+    if (p->topo <= 0) return 0;
+    *v = p->itens[--p->topo];
     return 1;
 }
 
-static int pilha_texto_push(PilhaTexto *pilha, const char *texto)
+static int pe_push(PilhaExpr *p, const char *s, int precedencia, char operador, double valor)
 {
-    if (pilha->topo >= PILHA_MAX || strlen(texto) >= CALC_TEXTO_MAX) {
-        return 0;
-    }
-    strcpy(pilha->itens[pilha->topo++], texto);
+    if (p->topo >= PILHA_MAX || strlen(s) >= STR_MAX) return 0;
+    strcpy(p->texto[p->topo], s);
+    p->precedencia[p->topo] = precedencia;
+    p->operador[p->topo] = operador;
+    p->valor[p->topo] = valor;
+    p->topo++;
     return 1;
 }
 
-static int pilha_texto_pop(PilhaTexto *pilha, char destino[CALC_TEXTO_MAX])
+static int pe_pop(PilhaExpr *p, char dst[STR_MAX], int *precedencia, char *operador, double *valor)
 {
-    if (pilha->topo <= 0) {
-        return 0;
-    }
-    strcpy(destino, pilha->itens[--pilha->topo]);
+    if (p->topo <= 0) return 0;
+    p->topo--;
+    strcpy(dst, p->texto[p->topo]);
+    *precedencia = p->precedencia[p->topo];
+    *operador = p->operador[p->topo];
+    *valor = p->valor[p->topo];
     return 1;
 }
 
-static int eh_operador_binario(const char *token)
+/* ---------- helpers de classificação ---------- */
+
+static int eh_operador(const char *t)
 {
-    return strlen(token) == 1 && strchr("+-*/%^", token[0]) != NULL;
+    return strlen(t) == 1 && strchr("+-*/%^", t[0]) != NULL;
 }
 
-static int eh_funcao_unaria(const char *token)
+static int eh_funcao(const char *t)
 {
-    return strcmp(token, "raiz") == 0 ||
-           strcmp(token, "sen") == 0 ||
-           strcmp(token, "cos") == 0 ||
-           strcmp(token, "tg") == 0 ||
-           strcmp(token, "log") == 0;
+    return strcmp(t, "raiz") == 0 ||
+           strcmp(t, "sen")  == 0 ||
+           strcmp(t, "cos")  == 0 ||
+           strcmp(t, "tg")   == 0 ||
+           strcmp(t, "log")  == 0;
 }
 
-static int ler_numero(const char *token, double *valor)
+static int ler_numero(const char *t, double *v)
 {
     char *fim = NULL;
     errno = 0;
-    *valor = strtod(token, &fim);
-    return errno == 0 && fim != token && *fim == '\0';
+    *v = strtod(t, &fim);
+    return errno == 0 && fim != t && *fim == '\0';
 }
 
-static int montar_binario(char destino[CALC_TEXTO_MAX], const char *esq, const char *op, const char *dir)
+/* ---------- montagem de expressão infixa ---------- */
+
+/* Retorna 1 se o operador precisa de parênteses ao ser aninhado */
+static int precedencia_operador(char op)
 {
-    return snprintf(destino, CALC_TEXTO_MAX, "(%s %s %s)", esq, op, dir) < CALC_TEXTO_MAX;
+    if (op == '+' || op == '-') return 1;
+    if (op == '*' || op == '/' || op == '%') return 2;
+    if (op == '^') return 3;
+    return 4;
 }
 
-static int montar_prefixo_binario(char destino[CALC_TEXTO_MAX], const char *op, const char *esq, const char *dir)
+static int precisa_parenteses_esq(char op_pai, int prec_filho, char op_filho)
 {
-    return snprintf(destino, CALC_TEXTO_MAX, "%s %s %s", op, esq, dir) < CALC_TEXTO_MAX;
+    int prec_pai = precedencia_operador(op_pai);
+
+    if (prec_filho < prec_pai) return 1;
+    if (op_pai == '^' && prec_filho == prec_pai) return 1;
+    if (op_pai == '^' && op_filho == 'n') return 1;
+
+    return 0;
 }
 
-static int montar_unario(char destino[CALC_TEXTO_MAX], const char *funcao, const char *operando)
+static int precisa_parenteses_dir(char op_pai, int prec_filho, char op_filho)
 {
-    return snprintf(destino, CALC_TEXTO_MAX, "%s(%s)", funcao, operando) < CALC_TEXTO_MAX;
+    int prec_pai = precedencia_operador(op_pai);
+
+    if (prec_filho < prec_pai) return 1;
+    if (prec_filho > prec_pai) return 0;
+
+    if (op_pai == '-' && (op_filho == '+' || op_filho == '-')) return 1;
+    if ((op_pai == '/' || op_pai == '%') && prec_filho == prec_pai) return 1;
+    if (op_pai == '*' && op_filho == '%') return 1;
+    if (op_pai == '^' && op_filho == 'n') return 1;
+
+    return 0;
 }
 
-static int montar_prefixo_unario(char destino[CALC_TEXTO_MAX], const char *funcao, const char *operando)
+static int copiar_operando(char dst[STR_MAX], const char *expr, int usar_parenteses)
 {
-    return snprintf(destino, CALC_TEXTO_MAX, "%s %s", funcao, operando) < CALC_TEXTO_MAX;
+    if (usar_parenteses) {
+        return snprintf(dst, STR_MAX, "(%s)", expr) < STR_MAX;
+    }
+
+    return snprintf(dst, STR_MAX, "%s", expr) < STR_MAX;
 }
 
-static int aplicar_binario(const char *op, double a, double b, double *saida, CalcResultado *resultado)
+static int montar_infixa(char dst[STR_MAX],
+                         const char *esq,
+                         int prec_esq,
+                         char op_esq,
+                         const char *op,
+                         const char *dir,
+                         int prec_dir,
+                         char op_dir)
 {
-    switch (op[0]) {
-    case '+':
-        *saida = a + b;
-        return 1;
-    case '-':
-        *saida = a - b;
-        return 1;
-    case '*':
-        *saida = a * b;
-        return 1;
+    char esq_final[STR_MAX];
+    char dir_final[STR_MAX];
+
+    if (!copiar_operando(esq_final, esq, precisa_parenteses_esq(op[0], prec_esq, op_esq))) return 0;
+    if (!copiar_operando(dir_final, dir, precisa_parenteses_dir(op[0], prec_dir, op_dir))) return 0;
+
+    return snprintf(dst, STR_MAX, "%s%s%s", esq_final, op, dir_final) < STR_MAX;
+}
+
+static int montar_infixa_unaria(char dst[STR_MAX], const char *fn, const char *operando)
+{
+    return snprintf(dst, STR_MAX, "%s(%s)", fn, operando) < STR_MAX;
+}
+
+/* ---------- avaliação ---------- */
+
+static int aplicar_binario(char op, double a, double b, double *saida)
+{
+    switch (op) {
+    case '+': *saida = a + b; return 1;
+    case '-': *saida = a - b; return 1;
+    case '*': *saida = a * b; return 1;
     case '/':
-        if (b == 0.0) {
-            definir_erro(resultado, CALC_ERRO_DIVISAO_ZERO, "divisao por zero");
-            return 0;
-        }
-        *saida = a / b;
-        return 1;
+        if (b == 0.0) return 0;
+        *saida = a / b; return 1;
     case '%':
-        if (b == 0.0) {
-            definir_erro(resultado, CALC_ERRO_DIVISAO_ZERO, "modulo por zero");
-            return 0;
-        }
-        *saida = fmod(a, b);
-        return 1;
+        if (b == 0.0) return 0;
+        *saida = fmod(a, b); return 1;
     case '^':
         errno = 0;
         *saida = pow(a, b);
-        if (errno != 0 || !isfinite(*saida)) {
-            definir_erro(resultado, CALC_ERRO_DOMINIO_MATEMATICO, "potencia fora do dominio");
-            return 0;
-        }
-        return 1;
-    default:
-        definir_erro(resultado, CALC_ERRO_TOKEN_INVALIDO, op);
-        return 0;
+        return errno == 0 && isfinite(*saida);
+    default: return 0;
     }
 }
 
-static int aplicar_unario(const char *funcao, double a, double *saida, CalcResultado *resultado)
+static int aplicar_unario(const char *fn, double a, double *saida)
 {
-    if (strcmp(funcao, "raiz") == 0) {
-        if (a < 0.0) {
-            definir_erro(resultado, CALC_ERRO_DOMINIO_MATEMATICO, "raiz de numero negativo");
-            return 0;
-        }
+    if (strcmp(fn, "raiz") == 0) {
+        if (a < 0.0) return 0;
         *saida = sqrt(a);
-    } else if (strcmp(funcao, "sen") == 0) {
+    } else if (strcmp(fn, "sen") == 0) {
         *saida = sin(a * PI / 180.0);
-    } else if (strcmp(funcao, "cos") == 0) {
+    } else if (strcmp(fn, "cos") == 0) {
         *saida = cos(a * PI / 180.0);
-    } else if (strcmp(funcao, "tg") == 0) {
-        double c = cos(a * PI / 180.0);
-        if (fabs(c) < 1e-12) {
-            definir_erro(resultado, CALC_ERRO_DOMINIO_MATEMATICO, "tangente indefinida");
-            return 0;
-        }
+    } else if (strcmp(fn, "tg") == 0) {
+        if (fabs(cos(a * PI / 180.0)) < 1e-12) return 0;
         *saida = tan(a * PI / 180.0);
-    } else if (strcmp(funcao, "log") == 0) {
-        if (a <= 0.0) {
-            definir_erro(resultado, CALC_ERRO_DOMINIO_MATEMATICO, "logaritmo de numero nao positivo");
-            return 0;
-        }
+    } else if (strcmp(fn, "log") == 0) {
+        if (a <= 0.0) return 0;
         *saida = log10(a);
     } else {
-        definir_erro(resultado, CALC_ERRO_TOKEN_INVALIDO, funcao);
         return 0;
     }
-
     return 1;
 }
 
-CalcResultado calcular_posfixa(const char *expressao)
+char *getInFixa(char *Str)
 {
-    CalcResultado resultado = {0};
-    PilhaDouble valores = {{0}, 0};
-    PilhaTexto infixas = {{{0}}, 0};
-    PilhaTexto prefixas = {{{0}}, 0};
-    char copia[CALC_TEXTO_MAX];
-    char *token = NULL;
+    static char resultado[STR_MAX];
+    PilhaExpr   pilha = {{{0}}, {0}, {0}, {0}, 0};
+    char        copia[STR_MAX];
+    char        *token;
 
-    resultado.status = CALC_OK;
+    if (Str == NULL || Str[0] == '\0') return NULL;
+    if (strlen(Str) >= STR_MAX)        return NULL;
 
-    if (expressao == NULL || expressao[0] == '\0') {
-        definir_erro(&resultado, CALC_ERRO_ENTRADA_VAZIA, NULL);
-        return resultado;
-    }
-
-    if (strlen(expressao) >= sizeof(copia)) {
-        definir_erro(&resultado, CALC_ERRO_EXPRESSAO_GRANDE, NULL);
-        return resultado;
-    }
-
-    strcpy(copia, expressao);
+    strcpy(copia, Str);
     token = strtok(copia, " \t\r\n");
 
     while (token != NULL) {
-        double numero = 0.0;
+        double num;
 
-        if (ler_numero(token, &numero)) {
-            if (!pilha_double_push(&valores, numero) ||
-                !pilha_texto_push(&infixas, token) ||
-                !pilha_texto_push(&prefixas, token)) {
-                definir_erro(&resultado, CALC_ERRO_EXPRESSAO_GRANDE, NULL);
-                return resultado;
-            }
-        } else if (eh_operador_binario(token)) {
-            double b = 0.0;
-            double a = 0.0;
-            double valor = 0.0;
-            char dir[CALC_TEXTO_MAX];
-            char esq[CALC_TEXTO_MAX];
-            char pref_dir[CALC_TEXTO_MAX];
-            char pref_esq[CALC_TEXTO_MAX];
-            char infixa[CALC_TEXTO_MAX];
-            char prefixa[CALC_TEXTO_MAX];
+        if (ler_numero(token, &num)) {
+            char op_numero = token[0] == '-' ? 'n' : '\0';
+            if (!pe_push(&pilha, token, 4, op_numero, num)) return NULL;
 
-            if (!pilha_double_pop(&valores, &b) || !pilha_double_pop(&valores, &a) ||
-                !pilha_texto_pop(&infixas, dir) || !pilha_texto_pop(&infixas, esq) ||
-                !pilha_texto_pop(&prefixas, pref_dir) || !pilha_texto_pop(&prefixas, pref_esq)) {
-                definir_erro(&resultado, CALC_ERRO_OPERANDOS_INSUFICIENTES, token);
-                return resultado;
-            }
+        } else if (eh_operador(token)) {
+            char dir[STR_MAX], esq[STR_MAX], infixa[STR_MAX];
+            int prec_dir, prec_esq;
+            char op_dir, op_esq;
+            double valor_dir, valor_esq, valor;
 
-            if (!aplicar_binario(token, a, b, &valor, &resultado)) {
-                return resultado;
-            }
-            if (!montar_binario(infixa, esq, token, dir) ||
-                !montar_prefixo_binario(prefixa, token, pref_esq, pref_dir) ||
-                !pilha_double_push(&valores, valor) ||
-                !pilha_texto_push(&infixas, infixa) ||
-                !pilha_texto_push(&prefixas, prefixa)) {
-                definir_erro(&resultado, CALC_ERRO_EXPRESSAO_GRANDE, NULL);
-                return resultado;
-            }
-        } else if (eh_funcao_unaria(token)) {
-            double a = 0.0;
-            double valor = 0.0;
-            char operando[CALC_TEXTO_MAX];
-            char pref_operando[CALC_TEXTO_MAX];
-            char infixa[CALC_TEXTO_MAX];
-            char prefixa[CALC_TEXTO_MAX];
+            if (!pe_pop(&pilha, dir, &prec_dir, &op_dir, &valor_dir) ||
+                !pe_pop(&pilha, esq, &prec_esq, &op_esq, &valor_esq)) return NULL;
+            if (!aplicar_binario(token[0], valor_esq, valor_dir, &valor)) return NULL;
+            if (!montar_infixa(infixa, esq, prec_esq, op_esq, token, dir, prec_dir, op_dir)) return NULL;
+            if (!pe_push(&pilha, infixa, precedencia_operador(token[0]), token[0], valor)) return NULL;
 
-            if (!pilha_double_pop(&valores, &a) ||
-                !pilha_texto_pop(&infixas, operando) ||
-                !pilha_texto_pop(&prefixas, pref_operando)) {
-                definir_erro(&resultado, CALC_ERRO_OPERANDOS_INSUFICIENTES, token);
-                return resultado;
-            }
-            if (!aplicar_unario(token, a, &valor, &resultado)) {
-                return resultado;
-            }
-            if (!montar_unario(infixa, token, operando) ||
-                !montar_prefixo_unario(prefixa, token, pref_operando) ||
-                !pilha_double_push(&valores, valor) ||
-                !pilha_texto_push(&infixas, infixa) ||
-                !pilha_texto_push(&prefixas, prefixa)) {
-                definir_erro(&resultado, CALC_ERRO_EXPRESSAO_GRANDE, NULL);
-                return resultado;
-            }
+        } else if (eh_funcao(token)) {
+            char operando[STR_MAX], infixa[STR_MAX];
+            int prec_operando;
+            char op_operando;
+            double valor_operando, valor;
+
+            if (!pe_pop(&pilha, operando, &prec_operando, &op_operando, &valor_operando)) return NULL;
+            if (!aplicar_unario(token, valor_operando, &valor)) return NULL;
+            if (!montar_infixa_unaria(infixa, token, operando)) return NULL;
+            if (!pe_push(&pilha, infixa, 4, 'F', valor)) return NULL;
+
         } else {
-            definir_erro(&resultado, CALC_ERRO_TOKEN_INVALIDO, token);
-            return resultado;
+            return NULL; /* token desconhecido */
         }
 
         token = strtok(NULL, " \t\r\n");
     }
 
-    if (valores.topo != 1 || infixas.topo != 1 || prefixas.topo != 1) {
-        definir_erro(&resultado, CALC_ERRO_OPERANDOS_SOBRANDO, NULL);
-        return resultado;
-    }
+    if (pilha.topo != 1) return NULL;
 
-    resultado.valor = valores.itens[0];
-    strcpy(resultado.infixa, infixas.itens[0]);
-    strcpy(resultado.prefixa, prefixas.itens[0]);
+    strncpy(resultado, pilha.texto[0], STR_MAX - 1);
+    resultado[STR_MAX - 1] = '\0';
     return resultado;
 }
 
-const char *calc_status_texto(CalcStatus status)
+float getValor(char *Str)
 {
-    switch (status) {
-    case CALC_OK:
-        return "ok";
-    case CALC_ERRO_ENTRADA_VAZIA:
-        return "entrada vazia";
-    case CALC_ERRO_TOKEN_INVALIDO:
-        return "token invalido";
-    case CALC_ERRO_OPERANDOS_INSUFICIENTES:
-        return "operandos insuficientes";
-    case CALC_ERRO_OPERANDOS_SOBRANDO:
-        return "operandos sobrando";
-    case CALC_ERRO_DIVISAO_ZERO:
-        return "divisao por zero";
-    case CALC_ERRO_DOMINIO_MATEMATICO:
-        return "erro de dominio matematico";
-    case CALC_ERRO_EXPRESSAO_GRANDE:
-        return "expressao grande demais";
-    default:
-        return "erro desconhecido";
+    PilhaDouble pilha = {{0}, 0};
+    char        copia[STR_MAX];
+    char        *token;
+
+    if (Str == NULL || Str[0] == '\0') return 0.0f;
+    if (strlen(Str) >= STR_MAX)        return 0.0f;
+
+    strcpy(copia, Str);
+    token = strtok(copia, " \t\r\n");
+
+    while (token != NULL) {
+        double num;
+
+        if (ler_numero(token, &num)) {
+            if (!pd_push(&pilha, num)) return 0.0f;
+
+        } else if (eh_operador(token)) {
+            double a, b, valor;
+            if (!pd_pop(&pilha, &b) || !pd_pop(&pilha, &a)) return 0.0f;
+            if (!aplicar_binario(token[0], a, b, &valor))   return 0.0f;
+            if (!pd_push(&pilha, valor))                     return 0.0f;
+
+        } else if (eh_funcao(token)) {
+            double a, valor;
+            if (!pd_pop(&pilha, &a))               return 0.0f;
+            if (!aplicar_unario(token, a, &valor)) return 0.0f;
+            if (!pd_push(&pilha, valor))           return 0.0f;
+
+        } else {
+            return 0.0f; /* token desconhecido */
+        }
+
+        token = strtok(NULL, " \t\r\n");
     }
+
+    if (pilha.topo != 1) return 0.0f;
+
+    return (float)pilha.itens[0];
 }

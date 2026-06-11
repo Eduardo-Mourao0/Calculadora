@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define ENTRADA_MAX 512
+
 static void remover_espacos_das_bordas(char *texto)
 {
     size_t inicio = 0;
@@ -23,17 +25,28 @@ static void remover_espacos_das_bordas(char *texto)
 
 static void executar_teste(const char *expressao)
 {
-    CalcResultado resultado = calcular_posfixa(expressao);
+    char copia_infixa[ENTRADA_MAX];
+    char copia_valor[ENTRADA_MAX];
+    char *infixa;
+    float valor;
 
     printf("Posfixa: %s\n", expressao);
-    if (resultado.status != CALC_OK) {
-        printf("Erro: %s\n\n", resultado.erro);
+
+    strncpy(copia_infixa, expressao, ENTRADA_MAX - 1);
+    copia_infixa[ENTRADA_MAX - 1] = '\0';
+    strncpy(copia_valor, expressao, ENTRADA_MAX - 1);
+    copia_valor[ENTRADA_MAX - 1] = '\0';
+
+    infixa = getInFixa(copia_infixa);
+    if (infixa == NULL) {
+        printf("Expressao invalida.\n\n");
         return;
     }
 
-    printf("Infixa : %s\n", resultado.infixa);
-    printf("Prefixa: %s\n", resultado.prefixa);
-    printf("Valor  : %.10g\n\n", resultado.valor);
+    valor = getValor(copia_valor);
+
+    printf("Infixa : %s\n", infixa);
+    printf("Valor  : %.10g\n\n", valor);
 }
 
 static void executar_testes_do_enunciado(void)
@@ -59,7 +72,7 @@ static void executar_testes_do_enunciado(void)
 
 int main(void)
 {
-    char entrada[CALC_TEXTO_MAX];
+    char entrada[ENTRADA_MAX];
 
     printf("Avaliador de expressoes numericas pos-fixas\n");
     printf("Operadores: + - * / %% ^ | Funcoes: raiz sen cos tg log\n");
